@@ -3,6 +3,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
+import traceback
 import urllib.parse
 from string import Template
 
@@ -12,36 +13,42 @@ import tqdm
 
 def dump_xmp_files(data_root, output_dir, copy_source_files=True):
     file_uri = urllib.parse.quote(os.path.join(data_root, "Managed Catalog.wfindex"))
+    template = Template(
+        "select path, size "
+        " from cacheReferences "
+        "where docId = '$doc_id' and isTrash = 0 and renditionName = '$rendition_name' "
+        "order by userUpdated desc"
+    )
     db = sqlite3.connect(f"file://{file_uri}?mode=ro", uri=True)
     all_docs = db.execute(
         "select docId, captureDate, fileName from coreInfo"
     ).fetchall()
+
     for doc_id, capture_date, original_file_name in tqdm.tqdm(all_docs):
-        template = Template(
-            "select path, size "
-            " from cacheReferences "
-            "where docId = '$doc_id' and isTrash = 0 and renditionName = '$rendition_name' "
-            "order by userUpdated desc"
-        )
-        src_files = db.execute(
-            template.safe_substitute(doc_id=doc_id, rendition_name="original")
-        ).fetchall()
-        xmp_files = db.execute(
-            template.safe_substitute(doc_id=doc_id, rendition_name="xmp_develop")
-        ).fetchall()
-        date_str = dateutil.parser.parse(capture_date).strftime("%Y-%m-%d")
-        os.makedirs(os.path.join(output_dir, date_str), exist_ok=True)
-        if copy_source_files:
-            for path, file_size in src_files:
-                cur_org_file = os.path.join(output_dir, date_str, original_file_name)
-                if not os.path.isfile(cur_org_file) or int(
-                    os.stat(cur_org_file).st_size
-                ) != int(file_size):
-                    shutil.copy2(os.path.join(data_root, path), cur_org_file)
-        for path, file_size in xmp_files[:1]:
-            xmp_filename, _ = os.path.splitext(original_file_name)
-            cur_xmp_file = os.path.join(output_dir, date_str, xmp_filename + ".xmp")
-            shutil.copy2(os.path.join(data_root, path), cur_xmp_file)
+        try:
+            src_files = db.execute(
+                template.safe_substitute(doc_id=doc_id, rendition_name="original")
+            ).fetchall()
+            xmp_files = db.execute(
+                template.safe_substitute(doc_id=doc_id, rendition_name="xmp_develop")
+            ).fetchall()
+            date_str = dateutil.parser.parse(capture_date).strftime("%Y-%m-%d")
+            os.makedirs(os.path.join(output_dir, date_str), exist_ok=True)
+            if copy_source_files:
+                for path, file_size in src_files:
+                    cur_org_file = os.path.join(
+                        output_dir, date_str, original_file_name
+                    )
+                    if not os.path.isfile(cur_org_file) or int(
+                        os.stat(cur_org_file).st_size
+                    ) != int(file_size):
+                        shutil.copy2(os.path.join(data_root, path), cur_org_file)
+            for path, file_size in xmp_files[:1]:
+                xmp_filename, _ = os.path.splitext(original_file_name)
+                cur_xmp_file = os.path.join(output_dir, date_str, xmp_filename + ".xmp")
+                shutil.copy2(os.path.join(data_root, path), cur_xmp_file)
+        except Exception:
+            traceback.print_exc()
     db.close()
 
 
@@ -57,6 +64,7 @@ def mount_lightroom_document_path():
 
 def umount_document_path(mount_path):
     os.system(f"fusermount -u {mount_path}")
+    os.rmdir(mount_path)
 
 
 def parse_args():
